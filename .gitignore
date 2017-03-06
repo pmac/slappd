@@ -60,3 +60,5 @@ target/
 slappd.cfg
 slappd.cfg.bak
 tags
+
+.env

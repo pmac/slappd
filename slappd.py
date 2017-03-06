@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.5
+#!/usr/bin/env python3
 """
 The MIT License
 
@@ -23,74 +23,84 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-from configparser import SafeConfigParser
 from operator import itemgetter
-import json
-import os
+from datetime import datetime
 import re
 import sys
+
 import requests
+from apscheduler.schedulers.blocking import BlockingScheduler
+from decouple import config, Csv
 
 
-def config_load():
-    """ Instantiates a global configparser object from the config file """
-    # pylint: disable=I0011,C0103,W0601
-    global cfg
+UNTAPPD_ID = config('UNTAPPD_ID')
+UNTAPPD_SECRET = config('UNTAPPD_SECRET')
+UNTAPPD_TOKEN = config('UNTAPPD_TOKEN')
+SLACK_TOKEN = config('SLACK_TOKEN')
 
-    cfg_file = config_path()
-    if not os.path.exists(cfg_file):
-        sys.exit('Error: Configuration file {} does not exist'
-                 .format(cfg_file))
-    else:
-        cfg = SafeConfigParser()
-        cfg.read(cfg_file)
+UNTAPPD_TIMEOUT = config('UNTAPPD_TIMEOUT', default=10, cast=int)
+CHECK_SECONDS = config('CHECK_SECONDS', default=60, cast=int)
+UNTAPPD_USERS = config('UNTAPPD_USERS', default='', cast=Csv())
 
+UNTAPPD_API_BASE = 'https://api.untappd.com/v4/user/checkins'
+LAST_CHECKIN = dict()
 
-def config_path():
-    """ Return the patch to the slappd configuration file """
-    return os.path.dirname(os.path.realpath(__file__)) + '/slappd.cfg'
+schedule = BlockingScheduler()
 
 
-def config_update():
-    """ Updates the config file with any changes that have been made """
-    cfg_file = config_path()
+class scheduled_job(object):
+    """Decorator for scheduled jobs. Takes same args as apscheduler.schedule_job."""
+    # mostly borrowed from mozilla/bedrock
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
 
-    try:
-        with open(cfg_file, 'w') as cfg_handle:
-            cfg.write(cfg_handle)
-    except EnvironmentError:
-        sys.exit('Error: Writing to the configuration file {}'
-                 .format(cfg_file))
+    def __call__(self, fn):
+        self.name = fn.__name__
+        self.callback = fn
+        schedule.add_job(self.run, id=self.name, *self.args, **self.kwargs)
+        log('Registered')
+        return self.run
+
+    def run(self):
+        log('starting')
+        try:
+            self.callback()
+        except Exception as e:
+            log('CRASHED: {}'.format(e))
+        else:
+            log('finished successfully')
 
 
-def fetch_untappd_activity():
+def log(message):
+    msg = '[{}] Slappd: {}'.format(datetime.utcnow(), message)
+    print(msg, file=sys.stderr)
+
+
+def fetch_untappd_activity(userid, last_checkin):
     """ Returns a requests object full of Untappd API data """
-    timeout = cfg.getint('untappd', 'timeout', fallback=10)
+    uturl = ('{}/{}?client_id={}&client_secret={}&'
+             'access_token={}&min_id={}').format(
+        userid,
+        UNTAPPD_ID,
+        UNTAPPD_SECRET,
+        UNTAPPD_TOKEN,
+        last_checkin,
+    )
     try:
-        request = requests.get(fetch_url('checkin/recent'), timeout=timeout)
+        request = requests.get(uturl, timeout=UNTAPPD_TIMEOUT)
         request.encoding = 'utf-8'
-        return request.text
+        return request.json()
     except requests.exceptions.Timeout:
         sys.exit('Error: Untappd API timed out after {} seconds'
-                 .format(timeout))
+                 .format(UNTAPPD_TIMEOUT))
     except requests.exceptions.RequestException:
         sys.exit('Error: There was an error connecting to the Untappd API')
 
 
-def fetch_url(method):
-    """ Returns an API url with credentials inserted """
-    return 'https://api.untappd.com/v4/{}?' \
-        'client_id={}&client_secret={}&access_token={}&min_id={}'.format(
-            method,
-            cfg.get('untappd', 'id'),
-            cfg.get('untappd', 'secret'),
-            cfg.get('untappd', 'token'),
-            cfg.get('untappd', 'lastseen'))
-
-
-def slack_message(token, text, icon, title=None, thumb=None):
+def slack_message(text, icon, title=None, thumb=None):
     """ Sends a Slack message via webhooks """
-    url = 'https://hooks.slack.com/services/' + token
+    url = 'https://hooks.slack.com/services/' + SLACK_TOKEN
     # If thumb is set, we're sending a badge notification
     if thumb is not None:
         # Strip any HTML in text returned from Untappd
@@ -122,94 +132,89 @@ def strip_html(text):
     return re.sub(r'<[^>]*?>', '', text)
 
 
-def main():
-    """ Where the magic happens """
-    config_load()
-    data = json.loads(fetch_untappd_activity())
-
+def process_user_checkins(userid):
+    prev_last_checkin = LAST_CHECKIN.get(userid, 0)
+    data = fetch_untappd_activity(userid, prev_last_checkin)
     if data['meta']['code'] == 200:
-        checkins = data['response']['checkins']['items']
-        slack_token = cfg.get('slack', 'token')
-        text = ''
-        for checkin in checkins:
-            user = checkin['user']['user_name'].lower()
-            # If this is one of our watched users, let's send a Slack message
-            if user in cfg.get('untappd', 'users'):
-                # If any users earned badges, let's send individual messages
-                for badge in checkin['badges']['items']:
-                    title = '{} {} earned the {} badge!' \
-                        .format(
-                            checkin['user']['first_name'],
-                            checkin['user']['last_name'],
-                            badge['badge_name'])
-                    slack_message(
-                        slack_token,
-                        badge['badge_description'],
-                        badge['badge_image']['sm'],
-                        title,
-                        badge['badge_image']['md'])
-
-                # Lump all of the check-ins together as one message
-                text += ':beer: *<{0}/user/{1}|{2} {3}>* is ' \
-                    'drinking a *<{0}/b/{8}/{4}|{5}>* by ' \
-                    '*<{0}/w/{8}/{7}|{6}>*'.format(
-                        'https://untappd.com',
-                        checkin['user']['user_name'],
-                        checkin['user']['first_name'],
-                        checkin['user']['last_name'],
-                        checkin['beer']['bid'],
-                        checkin['beer']['beer_name'],
-                        checkin['brewery']['brewery_name'],
-                        checkin['brewery']['brewery_id'],
-                        checkin['brewery']['brewery_slug'])
-
-                # If there's a location, include it
-                if checkin['venue']:
-                    text += ' at *<{}/v/{}/{}|{}>*'.format(
-                        'https://untappd.com',
-                        checkin['venue']['venue_slug'],
-                        checkin['venue']['venue_id'],
-                        checkin['venue']['venue_name'])
-
-                # If there's a rating, include it
-                if int(checkin['rating_score']):
-                    text += " ({}/5)".format(checkin['rating_score'])
-                text += "\n"
-
-                # If there's a check-in comment, include it
-                if len(checkin['checkin_comment']):
-                    text += ">\"{}\"\n".format(checkin['checkin_comment'])
-
-                # Use the beer label as an icon if it exists
-                if len(checkin['beer']['beer_label']):
-                    icon = checkin['beer']['beer_label']
-
-        # Send a message if there has been any check-in activity
-        if len(text):
-            slack_message(
-                slack_token,
-                text,
-                icon)
-
         # Find the id of the most recent check-in
         if data['response']['checkins']['count']:
-            cfg.set(
-                'untappd',
-                'lastseen',
-                str(max(data['response']['checkins']['items'],
-                        key=itemgetter('checkin_id'))['checkin_id']))
+            LAST_CHECKIN[userid] = str(max(data['response']['checkins']['items'],
+                                       key=itemgetter('checkin_id'))['checkin_id'])
 
-            # Update the config file with the last check-in seen
-            config_update()
+            if prev_last_checkin == 0:
+                return
+
+        checkins = data['response']['checkins']['items']
+        text = ''
+        for checkin in checkins:
+            # Lump all of the check-ins together as one message
+            text += ':beer: *<{0}/user/{1}|{2} {3}>* is ' \
+                'drinking a *<{0}/b/{8}/{4}|{5}>* by ' \
+                '*<{0}/w/{8}/{7}|{6}>*'.format(
+                    'https://untappd.com',
+                    checkin['user']['user_name'],
+                    checkin['user']['first_name'],
+                    checkin['user']['last_name'],
+                    checkin['beer']['bid'],
+                    checkin['beer']['beer_name'],
+                    checkin['brewery']['brewery_name'],
+                    checkin['brewery']['brewery_id'],
+                    checkin['brewery']['brewery_slug'])
+
+            # If there's a location, include it
+            if checkin['venue']:
+                text += ' at *<{}/v/{}/{}|{}>*'.format(
+                    'https://untappd.com',
+                    checkin['venue']['venue_slug'],
+                    checkin['venue']['venue_id'],
+                    checkin['venue']['venue_name'])
+
+            # If there's a rating, include it
+            if int(checkin['rating_score']):
+                text += " ({}/5)".format(checkin['rating_score'])
+            text += "\n"
+
+            # If there's a check-in comment, include it
+            if len(checkin['checkin_comment']):
+                text += ">\"{}\"\n".format(checkin['checkin_comment'])
+
+            # Use the beer label as an icon if it exists
+            if len(checkin['beer']['beer_label']):
+                icon = checkin['beer']['beer_label']
+            else:
+                icon = checkin['user']['user_avatar']
+
+            slack_message(text, icon)
+
+            for badge in checkin['badges']['items']:
+                title = '{} {} earned the {} badge!'.format(
+                    checkin['user']['first_name'],
+                    checkin['user']['last_name'],
+                    badge['badge_name'])
+                slack_message(
+                    badge['badge_description'],
+                    badge['badge_image']['sm'],
+                    title,
+                    badge['badge_image']['md'])
+
     elif data['meta']['error_type'] == 'invalid_limit':
-        sys.exit('Error: Untappd API rate limit reached, try again later')
+        raise RuntimeError('Error: Untappd API rate limit reached, try again later')
     else:
-        sys.exit('Error: Untappd API returned http code {}'
-                 .format(data['meta']['code']))
+        raise RuntimeError('Error: Untappd API returned http code {}'.format(data['meta']['code']))
+
+
+@scheduled_job('interval', seconds=CHECK_SECONDS)
+def main():
+    """ Where the magic happens """
+    for userid in UNTAPPD_USERS:
+        process_user_checkins(userid)
 
 
 if sys.version_info >= (3, 5):
     if __name__ == '__main__':
-        main()
+        try:
+            schedule.start()
+        except (KeyboardInterrupt, SystemExit):
+            pass
 else:
     sys.exit('Error: This script requires Python 3.5 or greater.')
