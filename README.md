@@ -1,28 +1,47 @@
 # slappd
 
 ### About
-Since Untappd does not currently support callbacks or webhooks, I wrote a basic
+
+Since [Untappd][] does not currently support callbacks or webhooks, I wrote a basic
 Slack integration that will relay check-ins and badges earned for specified users
 on your feed to a Slack channel.
 
 ![Screenshot](screenshot.png)
 
-This script is designed to be run from crontab, and issues one API call per run.
+This script is designed to be run from [Docker][], and issues one API call Untappd user per run.
+It runs as often as you tell it to in the `CHECK_SECONDS` environment variable (default 60).
 
-### Known Issues
-* The first time you run the script, it may be a little chatty because it has not
-previously seen your feed before.
-* If you have a lot of Untappd friends, but are only watching a subset of them,
-you may miss check-ins if you don't run Slappd regularly.
+Other required environment variable settings:
+
+```bash
+UNTAPPD_ID=untappd-api-client-id
+UNTAPPD_SECRET=untappd-api-client-secret
+UNTAPPD_TOKEN=untappd-api-access-token
+UNTAPPD_USERS=comma,separated,untappd,usernames
+SLACK_TOKEN=slack-webhook-integration-token
+```
 
 ### Requirements
-* Python 3.5 (It may run on >= 3.0, but I have not tested.)
-* Some Python modules (configparser, simplejson, requests)
-* A way of periodically running this script (at, cron, etc)
-* Untappd [API access](https://untappd.com/api/register?register=new)
+
+* Python 3.5 (It may run on >= 3.0, but I have not tested.) or [Docker][]
+  * If not Docker, some Python modules (requests, apscheduler, python-decouple)
+* [Untappd API access][]
 * A Slack channel full of beer lovers
 
 ### Configuration
-* Install the required Python modules via: `pip3 install -r requirements.txt`
-* Copy [slappd.cfg.dist](slappd.cfg.dist) to 'slappd.cfg' and edit it to reflect your API information
-* Run it from crontab: `*/5 * * * python3.5 /path/to/slappd.py > /dev/null 2>&1`
+
+* Build the docker image: `docker build -t slappd .`.
+* Create a `.env` file with the above variables filled in.
+* Run it: `docker run -it --env-file .env slappd`
+
+### Deployment
+
+It's designed to be deployed to a docker environment, though you could obviously
+run it anywhere you have a functioning python3.5+ installation. It should run
+great on [Heroku][] or a [Dokku][] server.
+
+[Untappd]: https://untappd.com/
+[Untappd API access]: https://untappd.com/api/register?register=new
+[Heroku]: https://www.heroku.com/
+[Dokku]: http://dokku.viewdocs.io/dokku/
+[Docker]: https://www.docker.com/
