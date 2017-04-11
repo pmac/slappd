@@ -23,29 +23,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-from operator import itemgetter
-from datetime import datetime
 import re
 import sys
+from datetime import datetime
+from operator import itemgetter
+from pathlib import Path
 
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from decouple import config, Csv
+from jinja2 import Environment, FileSystemLoader
+from slackclient import SlackClient
 
 
+DEBUG = config('DEBUG', default=False, cast=bool)
 UNTAPPD_ID = config('UNTAPPD_ID')
 UNTAPPD_SECRET = config('UNTAPPD_SECRET')
-UNTAPPD_TOKEN = config('UNTAPPD_TOKEN')
 SLACK_TOKEN = config('SLACK_TOKEN')
+SLACK_CHANNEL = config('SLACK_CHANNEL', default='#bot-testing')
 
 UNTAPPD_TIMEOUT = config('UNTAPPD_TIMEOUT', default=10, cast=int)
 CHECK_SECONDS = config('CHECK_SECONDS', default=60, cast=int)
 UNTAPPD_USERS = config('UNTAPPD_USERS', default='', cast=Csv())
 
 UNTAPPD_API_BASE = 'https://api.untappd.com/v4/user/checkins'
+UNTAPPD_DEFAULT_ICON = 'https://untappd.akamaized.net/assets/apple-touch-icon.png'
 LAST_CHECKIN = dict()
+ROOT = Path(__file__).parent
 
 schedule = BlockingScheduler()
+slack = SlackClient(SLACK_TOKEN)
+env = Environment(
+    loader=FileSystemLoader(str(ROOT.joinpath('templates')))
+)
 
 
 class scheduled_job(object):
@@ -67,7 +77,7 @@ class scheduled_job(object):
         try:
             self.callback()
         except Exception as e:
-            log('CRASHED: {}'.format(e))
+            log('CRASHED: %s' % e)
         else:
             log('finished successfully')
 
@@ -79,52 +89,43 @@ def log(message):
 
 def fetch_untappd_activity(userid, last_checkin):
     """ Returns a requests object full of Untappd API data """
-    uturl = ('{}/{}?client_id={}&client_secret={}&'
-             'access_token={}&min_id={}').format(
-        userid,
-        UNTAPPD_ID,
-        UNTAPPD_SECRET,
-        UNTAPPD_TOKEN,
-        last_checkin,
-    )
+    url = '{}/{}'.format(UNTAPPD_API_BASE, userid)
+    params = {
+        'client_id': UNTAPPD_ID,
+        'client_secret': UNTAPPD_SECRET,
+    }
+    if last_checkin:
+        params['min_id'] = last_checkin
+    else:
+        # only get last checkin so we can record it
+        params['limit'] = 1
+
     try:
-        request = requests.get(uturl, timeout=UNTAPPD_TIMEOUT)
-        request.encoding = 'utf-8'
-        return request.json()
+        response = requests.get(url, params=params, timeout=UNTAPPD_TIMEOUT)
+        return response.json()
     except requests.exceptions.Timeout:
-        sys.exit('Error: Untappd API timed out after {} seconds'
-                 .format(UNTAPPD_TIMEOUT))
+        sys.exit('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
     except requests.exceptions.RequestException:
         sys.exit('Error: There was an error connecting to the Untappd API')
 
 
-def slack_message(text, icon, title=None, thumb=None):
+def slack_message(text, icon=UNTAPPD_DEFAULT_ICON, title=None, thumb=None):
     """ Sends a Slack message via webhooks """
-    url = 'https://hooks.slack.com/services/' + SLACK_TOKEN
     # If thumb is set, we're sending a badge notification
     if thumb is not None:
         # Strip any HTML in text returned from Untappd
-        payload = {
-            'attachments': [
-                {
-                    'title': title,
-                    'text': strip_html(text),
-                    'thumb_url': thumb
-                }
-            ],
-            'icon_url': icon,
-            'username': 'Untappd'
-        }
+        slack.api_call('chat.postMessage',
+                       channel=SLACK_CHANNEL,
+                       attachments=[{
+                            'title': title,
+                            'text': strip_html(text),
+                            'thumb_url': thumb
+                       }],
+                       icon_url=icon,
+                       username='Untappd')
     else:
-        payload = {
-            'icon_url': icon,
-            'text': text,
-            'username': 'Untappd'
-        }
-    try:
-        requests.post(url, json=payload)
-    except requests.exceptions.RequestException:
-        sys.exit('Error: There was an error connecting to the Slack API')
+        slack.api_call('chat.postMessage', channel=SLACK_CHANNEL,
+                       text=text, icon_url=icon, username='Untappd')
 
 
 def strip_html(text):
@@ -133,69 +134,44 @@ def strip_html(text):
 
 
 def process_user_checkins(userid):
-    prev_last_checkin = LAST_CHECKIN.get(userid, 0)
+    if DEBUG:
+        print('getting checkins for ' + userid)
+
+    prev_last_checkin = LAST_CHECKIN.get(userid, None)
     data = fetch_untappd_activity(userid, prev_last_checkin)
     if data['meta']['code'] == 200:
         # Find the id of the most recent check-in
-        if data['response']['checkins']['count']:
+        if 'checkins' in data['response'] and data['response']['checkins']['count']:
             LAST_CHECKIN[userid] = str(max(data['response']['checkins']['items'],
                                        key=itemgetter('checkin_id'))['checkin_id'])
 
-            if prev_last_checkin == 0:
+            if prev_last_checkin is None and not DEBUG:
                 return
 
-        checkins = data['response']['checkins']['items']
-        text = ''
-        for checkin in checkins:
-            # Lump all of the check-ins together as one message
-            text += ':beer: *<{0}/user/{1}|{2} {3}>* is ' \
-                'drinking a *<{0}/b/{8}/{4}|{5}>* by ' \
-                '*<{0}/w/{8}/{7}|{6}>*'.format(
-                    'https://untappd.com',
-                    checkin['user']['user_name'],
-                    checkin['user']['first_name'],
-                    checkin['user']['last_name'],
-                    checkin['beer']['bid'],
-                    checkin['beer']['beer_name'],
-                    checkin['brewery']['brewery_name'],
-                    checkin['brewery']['brewery_id'],
-                    checkin['brewery']['brewery_slug'])
+            tmpl = env.get_template('checkin.txt')
+            checkins = data['response']['checkins']['items']
+            for checkin in checkins:
+                text = tmpl.render(checkin=checkin,
+                                   domain='https://untappd.com',
+                                   has_rating=int(checkin['rating_score']))
 
-            # If there's a location, include it
-            if checkin['venue']:
-                text += ' at *<{}/v/{}/{}|{}>*'.format(
-                    'https://untappd.com',
-                    checkin['venue']['venue_slug'],
-                    checkin['venue']['venue_id'],
-                    checkin['venue']['venue_name'])
+                # Use the beer label as an icon if it exists
+                if len(checkin['beer']['beer_label']):
+                    icon = checkin['beer']['beer_label']
+                else:
+                    icon = checkin['user']['user_avatar']
 
-            # If there's a rating, include it
-            if int(checkin['rating_score']):
-                text += " ({}/5)".format(checkin['rating_score'])
-            text += "\n"
+                slack_message(text, icon)
 
-            # If there's a check-in comment, include it
-            if len(checkin['checkin_comment']):
-                text += ">\"{}\"\n".format(checkin['checkin_comment'])
-
-            # Use the beer label as an icon if it exists
-            if len(checkin['beer']['beer_label']):
-                icon = checkin['beer']['beer_label']
-            else:
-                icon = checkin['user']['user_avatar']
-
-            slack_message(text, icon)
-
-            for badge in checkin['badges']['items']:
-                title = '{} {} earned the {} badge!'.format(
-                    checkin['user']['first_name'],
-                    checkin['user']['last_name'],
-                    badge['badge_name'])
-                slack_message(
-                    badge['badge_description'],
-                    badge['badge_image']['sm'],
-                    title,
-                    badge['badge_image']['md'])
+                for badge in checkin['badges']['items']:
+                    title = '{} earned the {} badge!'.format(
+                        checkin['user']['user_name'],
+                        badge['badge_name'])
+                    slack_message(
+                        badge['badge_description'],
+                        badge['badge_image']['sm'],
+                        title,
+                        badge['badge_image']['md'])
 
     elif data['meta']['error_type'] == 'invalid_limit':
         raise RuntimeError('Error: Untappd API rate limit reached, try again later')
@@ -213,7 +189,10 @@ def main():
 if sys.version_info >= (3, 5):
     if __name__ == '__main__':
         try:
-            schedule.start()
+            if DEBUG:
+                main()
+            else:
+                schedule.start()
         except (KeyboardInterrupt, SystemExit):
             pass
 else:
