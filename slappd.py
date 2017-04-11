@@ -11,10 +11,12 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from decouple import config, Csv
 from jinja2 import Environment, FileSystemLoader
 from pytz import utc
+from redis import Redis
 from slackclient import SlackClient
 
 
 DEBUG = config('DEBUG', default=False, cast=bool)
+REDIS_URL = config('REDIS_URL', default=None)
 UNTAPPD_ID = config('UNTAPPD_ID')
 UNTAPPD_SECRET = config('UNTAPPD_SECRET')
 SLACK_TOKEN = config('SLACK_TOKEN')
@@ -34,6 +36,31 @@ slack = SlackClient(SLACK_TOKEN)
 env = Environment(
     loader=FileSystemLoader(str(ROOT.joinpath('templates')))
 )
+
+if REDIS_URL:
+    redis = Redis.from_url(REDIS_URL)
+else:
+    redis = None
+
+
+def _redis_key(username):
+    return 'last_checkin:%s' % username
+
+
+def get_last_checkin(username):
+    lc = LAST_CHECKIN.get(username)
+    if lc is None and redis:
+        lc = redis.get(_redis_key(username))
+        if lc:
+            set_last_checkin(username, lc)
+
+    return lc
+
+
+def set_last_checkin(username, checkin):
+    LAST_CHECKIN[username] = checkin
+    if redis:
+        redis.set(_redis_key(username), checkin)
 
 
 class scheduled_job(object):
@@ -115,13 +142,13 @@ def process_user_checkins(userid):
     if DEBUG:
         print('getting checkins for ' + userid)
 
-    prev_last_checkin = LAST_CHECKIN.get(userid, None)
+    prev_last_checkin = get_last_checkin(userid)
     data = fetch_untappd_activity(userid, prev_last_checkin)
     if data['meta']['code'] == 200:
         # Find the id of the most recent check-in
         if 'checkins' in data['response'] and data['response']['checkins']['count']:
-            LAST_CHECKIN[userid] = str(max(data['response']['checkins']['items'],
-                                       key=itemgetter('checkin_id'))['checkin_id'])
+            set_last_checkin(userid, str(max(data['response']['checkins']['items'],
+                                             key=itemgetter('checkin_id'))['checkin_id']))
 
             if prev_last_checkin is None and not DEBUG:
                 return
