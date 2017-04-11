@@ -33,6 +33,7 @@ import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from decouple import config, Csv
 from jinja2 import Environment, FileSystemLoader
+from pytz import utc
 from slackclient import SlackClient
 
 
@@ -51,7 +52,7 @@ UNTAPPD_DEFAULT_ICON = 'https://untappd.akamaized.net/assets/apple-touch-icon.pn
 LAST_CHECKIN = dict()
 ROOT = Path(__file__).parent
 
-schedule = BlockingScheduler()
+schedule = BlockingScheduler(timezone=utc)
 slack = SlackClient(SLACK_TOKEN)
 env = Environment(
     loader=FileSystemLoader(str(ROOT.joinpath('templates')))
