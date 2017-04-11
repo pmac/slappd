@@ -2,7 +2,6 @@
 
 import re
 import sys
-from datetime import datetime
 from operator import itemgetter
 from pathlib import Path
 
@@ -52,7 +51,8 @@ def get_last_checkin(username):
     if lc is None and redis:
         lc = redis.get(_redis_key(username))
         if lc:
-            set_last_checkin(username, lc)
+            log('loaded last checkin for %s from redis' % username)
+            LAST_CHECKIN[username] = lc
 
     return lc
 
@@ -60,6 +60,7 @@ def get_last_checkin(username):
 def set_last_checkin(username, checkin):
     LAST_CHECKIN[username] = checkin
     if redis:
+        log('set last checkin for %s in redis' % username)
         redis.set(_redis_key(username), checkin)
 
 
@@ -88,7 +89,7 @@ class scheduled_job(object):
 
 
 def log(message):
-    msg = '[{}] Slappd: {}'.format(datetime.utcnow(), message)
+    msg = 'slappd: %s' % message
     print(msg, file=sys.stderr)
 
 
