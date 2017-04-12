@@ -123,8 +123,10 @@ def fetch_untappd_activity(userid, last_checkin):
         raise RuntimeError('Error: There was an error connecting to the Untappd API')
 
     if data.meta.code == 200:
+        # requests with a `limit` will have a `checkins` key
         if 'checkins' in data.response:
             return data.response.checkins.items
+        # requests with a `min_id` will not have a `checkins` key
         else:
             return data.response.items
     elif data.meta.error_type == 'invalid_limit':
