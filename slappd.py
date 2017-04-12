@@ -199,6 +199,10 @@ if sys.version_info >= (3, 5):
             main()
             if not DEBUG:
                 schedule.start()
+            else:
+                print('UNTAPPD_USERS: ', UNTAPPD_USERS)
+                print('SLACK_CHANNEL: ', SLACK_CHANNEL)
+                print(' LAST_CHECKIN: ', LAST_CHECKIN)
         except (KeyboardInterrupt, SystemExit):
             pass
 else:
