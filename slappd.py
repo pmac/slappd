@@ -93,6 +93,13 @@ def log(message):
     print(msg, file=sys.stderr)
 
 
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattribute__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
 def fetch_untappd_activity(userid, last_checkin):
     """ Returns a requests object full of Untappd API data """
     url = '{}/{}'.format(UNTAPPD_API_BASE, userid)
@@ -109,20 +116,21 @@ def fetch_untappd_activity(userid, last_checkin):
     try:
         resp = requests.get(url, params=params, timeout=UNTAPPD_TIMEOUT)
         resp.raise_for_status()
-        data = resp.json()
-        if data['meta']['code'] == 200:
-            if 'checkins' in data['response']:
-                return data['response']['checkins']['items']
-            else:
-                return data['response']['items']
-        elif data['meta']['error_type'] == 'invalid_limit':
-            raise RuntimeError('Error: Untappd API rate limit reached, try again later')
-        else:
-            raise RuntimeError('Error: Untappd API returned http code {}'.format(data['meta']['code']))
+        data = resp.json(object_hook=dotdict)
     except requests.exceptions.Timeout:
         raise RuntimeError('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
     except requests.exceptions.RequestException:
         raise RuntimeError('Error: There was an error connecting to the Untappd API')
+
+    if data.meta.code == 200:
+        if 'checkins' in data.response:
+            return data.response.checkins.items
+        else:
+            return data.response.items
+    elif data.meta.error_type == 'invalid_limit':
+        raise RuntimeError('Error: Untappd API rate limit reached, try again later')
+    else:
+        raise RuntimeError('Error: Untappd API returned http code {}'.format(data.meta.code))
 
 
 def slack_message(text, icon=UNTAPPD_DEFAULT_ICON, title=None, thumb=None):
@@ -151,13 +159,13 @@ def strip_html(text):
 
 def process_user_checkins(userid):
     if DEBUG:
-        print('getting checkins for ' + userid)
+        log('getting checkins for ' + userid)
 
     prev_last_checkin = get_last_checkin(userid)
     checkins = fetch_untappd_activity(userid, prev_last_checkin)
     # Find the id of the most recent check-in
     if checkins:
-        set_last_checkin(userid, str(max(checkins, key=itemgetter('checkin_id'))['checkin_id']))
+        set_last_checkin(userid, str(max(checkins, key=itemgetter('checkin_id')).checkin_id))
 
         if prev_last_checkin is None and not DEBUG:
             return
@@ -170,13 +178,13 @@ def process_user_checkins(userid):
 
             slack_message(text)
 
-            for badge in checkin['badges']['items']:
-                title = '{} earned the {} badge!'.format(checkin['user']['user_name'],
-                                                         badge['badge_name'])
-                slack_message(badge['badge_description'],
-                              badge['badge_image']['sm'],
+            for badge in checkin.badges.items:
+                title = '{} earned the {} badge!'.format(checkin.user.user_name,
+                                                         badge.badge_name)
+                slack_message(badge.badge_description,
+                              badge.badge_image.sm,
                               title,
-                              badge['badge_image']['md'])
+                              badge.badge_image.md)
 
 
 @scheduled_job('interval', seconds=CHECK_SECONDS)
@@ -194,9 +202,9 @@ if sys.version_info >= (3, 5):
             if not DEBUG:
                 schedule.start()
             else:
-                print('UNTAPPD_USERS: ', UNTAPPD_USERS)
-                print('SLACK_CHANNEL: ', SLACK_CHANNEL)
-                print(' LAST_CHECKIN: ', LAST_CHECKIN)
+                log('UNTAPPD_USERS:', UNTAPPD_USERS)
+                log('SLACK_CHANNEL:', SLACK_CHANNEL)
+                log(' LAST_CHECKIN:', LAST_CHECKIN)
         except (KeyboardInterrupt, SystemExit):
             pass
 else:
