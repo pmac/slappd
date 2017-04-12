@@ -107,12 +107,22 @@ def fetch_untappd_activity(userid, last_checkin):
         params['limit'] = 1
 
     try:
-        response = requests.get(url, params=params, timeout=UNTAPPD_TIMEOUT)
-        return response.json()
+        resp = requests.get(url, params=params, timeout=UNTAPPD_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        if data['meta']['code'] == 200:
+            if 'checkins' in data['response']:
+                return data['response']['checkins']['items']
+            else:
+                return data['response']['items']
+        elif data['meta']['error_type'] == 'invalid_limit':
+            raise RuntimeError('Error: Untappd API rate limit reached, try again later')
+        else:
+            raise RuntimeError('Error: Untappd API returned http code {}'.format(data['meta']['code']))
     except requests.exceptions.Timeout:
-        sys.exit('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
+        raise RuntimeError('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
     except requests.exceptions.RequestException:
-        sys.exit('Error: There was an error connecting to the Untappd API')
+        raise RuntimeError('Error: There was an error connecting to the Untappd API')
 
 
 def slack_message(text, icon=UNTAPPD_DEFAULT_ICON, title=None, thumb=None):
@@ -144,45 +154,37 @@ def process_user_checkins(userid):
         print('getting checkins for ' + userid)
 
     prev_last_checkin = get_last_checkin(userid)
-    data = fetch_untappd_activity(userid, prev_last_checkin)
-    if data['meta']['code'] == 200:
-        # Find the id of the most recent check-in
-        if 'checkins' in data['response'] and data['response']['checkins']['count']:
-            set_last_checkin(userid, str(max(data['response']['checkins']['items'],
-                                             key=itemgetter('checkin_id'))['checkin_id']))
+    checkins = fetch_untappd_activity(userid, prev_last_checkin)
+    # Find the id of the most recent check-in
+    if checkins:
+        set_last_checkin(userid, str(max(checkins, key=itemgetter('checkin_id'))['checkin_id']))
 
-            if prev_last_checkin is None and not DEBUG:
-                return
+        if prev_last_checkin is None and not DEBUG:
+            return
 
-            tmpl = env.get_template('checkin.txt')
-            checkins = data['response']['checkins']['items']
-            for checkin in checkins:
-                text = tmpl.render(checkin=checkin,
-                                   domain='https://untappd.com',
-                                   has_rating=int(checkin['rating_score']))
+        tmpl = env.get_template('checkin.txt')
+        for checkin in checkins:
+            text = tmpl.render(checkin=checkin,
+                               domain='https://untappd.com',
+                               has_rating=int(checkin['rating_score']))
 
-                # Use the beer label as an icon if it exists
-                if len(checkin['beer']['beer_label']):
-                    icon = checkin['beer']['beer_label']
-                else:
-                    icon = checkin['user']['user_avatar']
+            # Use the beer label as an icon if it exists
+            if len(checkin['beer']['beer_label']):
+                icon = checkin['beer']['beer_label']
+            else:
+                icon = checkin['user']['user_avatar']
 
-                slack_message(text, icon)
+            slack_message(text, icon)
 
-                for badge in checkin['badges']['items']:
-                    title = '{} earned the {} badge!'.format(
-                        checkin['user']['user_name'],
-                        badge['badge_name'])
-                    slack_message(
-                        badge['badge_description'],
-                        badge['badge_image']['sm'],
-                        title,
-                        badge['badge_image']['md'])
-
-    elif data['meta']['error_type'] == 'invalid_limit':
-        raise RuntimeError('Error: Untappd API rate limit reached, try again later')
-    else:
-        raise RuntimeError('Error: Untappd API returned http code {}'.format(data['meta']['code']))
+            for badge in checkin['badges']['items']:
+                title = '{} earned the {} badge!'.format(
+                    checkin['user']['user_name'],
+                    badge['badge_name'])
+                slack_message(
+                    badge['badge_description'],
+                    badge['badge_image']['sm'],
+                    title,
+                    badge['badge_image']['md'])
 
 
 @scheduled_job('interval', seconds=CHECK_SECONDS)
