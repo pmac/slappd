@@ -168,23 +168,15 @@ def process_user_checkins(userid):
                                domain='https://untappd.com',
                                has_rating=int(checkin['rating_score']))
 
-            # Use the beer label as an icon if it exists
-            if len(checkin['beer']['beer_label']):
-                icon = checkin['beer']['beer_label']
-            else:
-                icon = checkin['user']['user_avatar']
-
-            slack_message(text, icon)
+            slack_message(text)
 
             for badge in checkin['badges']['items']:
-                title = '{} earned the {} badge!'.format(
-                    checkin['user']['user_name'],
-                    badge['badge_name'])
-                slack_message(
-                    badge['badge_description'],
-                    badge['badge_image']['sm'],
-                    title,
-                    badge['badge_image']['md'])
+                title = '{} earned the {} badge!'.format(checkin['user']['user_name'],
+                                                         badge['badge_name'])
+                slack_message(badge['badge_description'],
+                              badge['badge_image']['sm'],
+                              title,
+                              badge['badge_image']['md'])
 
 
 @scheduled_job('interval', seconds=CHECK_SECONDS)
