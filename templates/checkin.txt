@@ -1,7 +1,7 @@
 :beer: *<{{ domain }}/user/{{ checkin.user.user_name }}|{{ checkin.user.user_name
 }}>* is drinking a *<{{ domain }}/b/{{ checkin.brewery.brewery_slug }}/{{ checkin.beer.bid
 }}|{{ checkin.beer.beer_name }}>*;
-{%- if checkin.beer.beer_abv %} {{ '%.1f'|format(checkin.beer.beer_abv) }}{% endif %} {{
+{%- if checkin.beer.beer_abv %} {{ '%.1f'|format(checkin.beer.beer_abv) }}%{% endif %} {{
 checkin.beer.beer_style }} by *<{{ domain }}/w/{{ checkin.brewery.brewery_slug
 }}/{{ checkin.brewery.brewery_id }}|{{ checkin.brewery.brewery_name }}>*
 {%- if checkin.venue %} at *<{{ domain }}/v/{{ checkin.venue.venue_slug
