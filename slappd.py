@@ -174,8 +174,16 @@ def process_user_checkins(userid):
 
         tmpl = env.get_template('checkin.txt')
         for checkin in checkins:
+            location = [
+                checkin.brewery.location.brewery_city,
+                checkin.brewery.location.brewery_state,
+                checkin.brewery.country_name,
+            ]
+            # filter out empty values
+            location = [x for x in location if x]
             text = tmpl.render(checkin=checkin,
                                domain='https://untappd.com',
+                               location=', '.join(location),
                                has_rating=int(checkin['rating_score']))
 
             slack_message(text)
@@ -203,10 +211,6 @@ if sys.version_info >= (3, 5):
             main()
             if not DEBUG:
                 schedule.start()
-            else:
-                log('UNTAPPD_USERS:', UNTAPPD_USERS)
-                log('SLACK_CHANNEL:', SLACK_CHANNEL)
-                log(' LAST_CHECKIN:', LAST_CHECKIN)
         except (KeyboardInterrupt, SystemExit):
             pass
 else:
