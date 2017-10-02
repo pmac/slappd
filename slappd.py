@@ -119,8 +119,9 @@ def fetch_untappd_activity(userid, last_checkin):
         data = resp.json(object_hook=dotdict)
     except requests.exceptions.Timeout:
         raise RuntimeError('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
-    except requests.exceptions.RequestException:
-        raise RuntimeError('Error: There was an error connecting to the Untappd API')
+    except requests.exceptions.RequestException as e:
+        log('Error: There was an error getting checkins for %s' % userid)
+        raise RuntimeError(str(e))
 
     if data.meta.code == 200:
         # requests with a `limit` will have a `checkins` key
@@ -164,7 +165,11 @@ def process_user_checkins(userid):
         log('getting checkins for ' + userid)
 
     prev_last_checkin = get_last_checkin(userid)
-    checkins = fetch_untappd_activity(userid, prev_last_checkin)
+    try:
+        checkins = fetch_untappd_activity(userid, prev_last_checkin)
+    except RuntimeError:
+        # something has gone wrong, try the next user
+        return
     # Find the id of the most recent check-in
     if checkins:
         set_last_checkin(userid, str(max(checkins, key=itemgetter('checkin_id')).checkin_id))
