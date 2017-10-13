@@ -128,6 +128,7 @@ def fetch_untappd_activity(userid, last_checkin):
         raise RuntimeError('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
     except requests.exceptions.RequestException as e:
         log('Error: There was an error getting checkins for %s' % userid)
+        log(e)
         clear_last_checkin(userid)
         raise RuntimeError(str(e))
 
