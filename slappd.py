@@ -64,6 +64,13 @@ def set_last_checkin(username, checkin):
         redis.set(_redis_key(username), checkin)
 
 
+def clear_last_checkin(username):
+    del LAST_CHECKIN[username]
+    if redis:
+        log('clear last checkin for %s in redis' % username)
+        redis.delete(_redis_key(username))
+
+
 class scheduled_job(object):
     """Decorator for scheduled jobs. Takes same args as apscheduler.schedule_job."""
     # mostly borrowed from mozilla/bedrock
@@ -121,6 +128,7 @@ def fetch_untappd_activity(userid, last_checkin):
         raise RuntimeError('Error: Untappd API timed out after {} seconds'.format(UNTAPPD_TIMEOUT))
     except requests.exceptions.RequestException as e:
         log('Error: There was an error getting checkins for %s' % userid)
+        clear_last_checkin(userid)
         raise RuntimeError(str(e))
 
     if data.meta.code == 200:
