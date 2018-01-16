@@ -58,6 +58,7 @@ def get_last_checkin(username):
 
 
 def set_last_checkin(username, checkin):
+    checkin = str(checkin)
     LAST_CHECKIN[username] = checkin
     if redis:
         log('set last checkin for %s in redis' % username)
@@ -107,18 +108,14 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 
-def fetch_untappd_activity(userid, last_checkin):
+def fetch_untappd_activity(userid):
     """ Returns a requests object full of Untappd API data """
     url = '{}/{}'.format(UNTAPPD_API_BASE, userid)
     params = {
         'client_id': UNTAPPD_ID,
         'client_secret': UNTAPPD_SECRET,
+        'limit': 5,
     }
-    if last_checkin:
-        params['min_id'] = last_checkin
-    else:
-        # only get last checkin so we can record it
-        params['limit'] = 1
 
     try:
         resp = requests.get(url, params=params, timeout=UNTAPPD_TIMEOUT)
@@ -133,12 +130,8 @@ def fetch_untappd_activity(userid, last_checkin):
         raise RuntimeError(str(e))
 
     if data.meta.code == 200:
-        # requests with a `limit` will have a `checkins` key
-        if 'checkins' in data.response:
-            return data.response.checkins.items
-        # requests with a `min_id` will not have a `checkins` key
-        else:
-            return data.response.items
+        # reversed to put newest last
+        return list(reversed(data.response.checkins.items))
     elif data.meta.error_type == 'invalid_limit':
         raise RuntimeError('Error: Untappd API rate limit reached, try again later')
     else:
@@ -175,19 +168,29 @@ def process_user_checkins(userid):
 
     prev_last_checkin = get_last_checkin(userid)
     try:
-        checkins = fetch_untappd_activity(userid, prev_last_checkin)
+        checkins = fetch_untappd_activity(userid)
     except RuntimeError:
         # something has gone wrong, try the next user
         return
     # Find the id of the most recent check-in
     if checkins:
-        set_last_checkin(userid, str(max(checkins, key=itemgetter('checkin_id')).checkin_id))
+        most_recent_checkin_id = checkins[-1].checkin_id
+        set_last_checkin(userid, most_recent_checkin_id)
 
-        if prev_last_checkin is None and not DEBUG:
+        if prev_last_checkin is None:
+            # first run, don't print anything
+            return
+
+        prev_last_checkin = int(prev_last_checkin)
+        if prev_last_checkin == most_recent_checkin_id:
+            # nothing to do
             return
 
         tmpl = env.get_template('checkin.txt')
         for checkin in checkins:
+            if checkin.checkin_id <= prev_last_checkin:
+                continue
+
             location = [
                 checkin.brewery.location.brewery_city,
                 checkin.brewery.location.brewery_state,
