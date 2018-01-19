@@ -174,16 +174,18 @@ def process_user_checkins(userid):
         return
     # Find the id of the most recent check-in
     if checkins:
+        if prev_last_checkin:
+            prev_last_checkin = int(prev_last_checkin)
+
         most_recent_checkin_id = checkins[-1].checkin_id
+        if prev_last_checkin == most_recent_checkin_id:
+            # nothing to do
+            return
+
         set_last_checkin(userid, most_recent_checkin_id)
 
         if prev_last_checkin is None:
             # first run, don't print anything
-            return
-
-        prev_last_checkin = int(prev_last_checkin)
-        if prev_last_checkin == most_recent_checkin_id:
-            # nothing to do
             return
 
         tmpl = env.get_template('checkin.txt')
